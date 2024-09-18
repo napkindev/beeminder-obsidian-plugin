@@ -24,14 +24,11 @@ const DEFAULT_SETTINGS: BeeminderSettings = {
 };
 
 export default class ExamplePlugin extends Plugin {
-    statusBarTextElement: HTMLSpanElement;
     settings: BeeminderSettings;
     private intervalId: number | null = null;
 
     async onload() {
         console.log("Hello world");
-        this.statusBarTextElement = this.addStatusBarItem().createEl('span');
-        this.statusBarTextElement.textContent = "beeminder";
 
         // Load settings
         await this.loadSettings();
@@ -45,7 +42,6 @@ export default class ExamplePlugin extends Plugin {
             if (file && this.settings.goals.some(goal => goal.filePath === file.path)) {
                 const content = await this.app.vault.read(file);
                 console.log(content);
-                this.updateCompletedTaskCount(content);
                 await this.checkAndUpdateBeeminder(content, file.path);
             }
         });
@@ -54,7 +50,6 @@ export default class ExamplePlugin extends Plugin {
             const file = this.app.workspace.getActiveFile();
             if (file && this.settings.goals.some(goal => goal.filePath === file.path)) {
                 const content = editor.getDoc().getValue();
-                this.updateCompletedTaskCount(content);
                 await this.checkAndUpdateBeeminder(content, file.path);
             }
         });
@@ -122,12 +117,6 @@ export default class ExamplePlugin extends Plugin {
             const content = await this.app.vault.read(file);
             await this.checkAndUpdateBeeminder(content, goal.filePath);
         }
-    }
-
-    private updateCompletedTaskCount(fileContent?: string) {
-        const count = fileContent ? fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [x]")).length : 0;
-        const tasksWord = count === 1 ? "completed task" : "completed tasks";
-        this.statusBarTextElement.textContent = `${count} ${tasksWord}`;
     }
 
     private async checkAndUpdateBeeminder(fileContent: string, filePath: string) {
