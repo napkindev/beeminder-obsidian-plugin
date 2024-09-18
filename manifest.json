@@ -1,11 +1,23 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "obsidian-beeminder-plugin",
+	"name": "Beeminder Integration",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
+	"description": "Integrate Beeminder goals with Obsidian tasks",
+	"author": "Your Name",
+	"authorUrl": "https://your-website.com",
 	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+	"isDesktopOnly": false,
+	"commands": [
+		{
+			"id": "submit-beeminder-datapoint",
+			"name": "Submit Beeminder Datapoint",
+			"hotkeys": [
+				{
+					"modifiers": ["Mod", "Shift"],
+					"key": "B"
+				}
+			]
+		}
+	]
 }
