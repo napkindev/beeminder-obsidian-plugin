@@ -284,12 +284,14 @@ class BeeminderSettingTab extends PluginSettingTab {
                 .addButton(button => button
                     .setButtonText('Go to Hotkeys')
                     .onClick(() => {
-                        // Open Obsidian's hotkey settings for this command
-                        this.app.setting.openTabById('hotkeys');
-                        const hotkeySetting = this.app.setting.activeTab.containerEl.querySelector(`[data-hotkey-id="beeminder-obsidian:submit-beeminder-datapoint-goal-${i}"]`);
-                        if (hotkeySetting) {
-                            hotkeySetting.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        }
+                        (this.app as any).setting.open();
+                        (this.app as any).setting.openTabById('hotkeys');
+                        setTimeout(() => {
+                            const hotkeySetting = document.querySelector(`[data-hotkey-id="beeminder-obsidian:submit-beeminder-datapoint-goal-${i}"]`);
+                            if (hotkeySetting) {
+                                hotkeySetting.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }, 300);
                     }));
         }
     }
