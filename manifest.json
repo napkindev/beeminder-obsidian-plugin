@@ -1,23 +1,11 @@
 {
 	"id": "obsidian-beeminder-plugin",
-	"name": "Beeminder Integration",
+	"name": "Beeminder",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Integrate Beeminder goals with Obsidian tasks",
-	"author": "Your Name",
-	"authorUrl": "https://your-website.com",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false,
-	"commands": [
-		{
-			"id": "submit-beeminder-datapoint",
-			"name": "Submit Beeminder Datapoint",
-			"hotkeys": [
-				{
-					"modifiers": ["Mod", "Shift"],
-					"key": "B"
-				}
-			]
-		}
-	]
+	"description": "Automatically sync various Obsidian data to Beeminder Goal Datapoints.",
+	"author": "Back of the Napkin Labs",
+	"authorUrl": "https://backofthenapkinlabs.com",
+	"fundingUrl": "https://backofthenapkinlabs.com",
+	"isDesktopOnly": false
 }
