@@ -120,12 +120,27 @@ export default class ExamplePlugin extends Plugin {
     }
 
     private async checkAndUpdateBeeminder(fileContent: string, filePath: string) {
-        const completedTasksCount = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [x]")).length;
         const goal = this.settings.goals.find(g => g.filePath === filePath);
         if (goal) {
+            let value: number;
+            switch (goal.metricType) {
+                case 'wordCount':
+                    value = fileContent.split(/\s+/).length;
+                    break;
+                case 'completedTasks':
+                    value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [x]")).length;
+                    break;
+                case 'uncompletedTasks':
+                    value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [ ]")).length;
+                    break;
+                default:
+                    console.error(`Unknown metric type: ${goal.metricType}`);
+                    return;
+            }
+
             const currentBeeminderValue = await this.getBeeminderCurrentValue(goal.slug);
-            if (completedTasksCount !== currentBeeminderValue) {
-                await this.pushBeeminderDataPoint(completedTasksCount, goal.slug);
+            if (value !== currentBeeminderValue) {
+                await this.pushBeeminderDataPoint(value, goal.slug);
             }
         }
     }
