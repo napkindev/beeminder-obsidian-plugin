@@ -12,6 +12,7 @@ interface BeeminderSettings {
     username: string;
     timezone: string;
     dayEndTime: string; // in 24-hour format, e.g., "06:00"
+    dayEndMinute: number;
     goals: Array<{
         slug: string;
         filePath: string;
@@ -23,14 +24,51 @@ interface BeeminderSettings {
             seconds: number;
         };
     }>;
+    dayEndHour: number;
 }
 
 const DEFAULT_SETTINGS: BeeminderSettings = {
     apiKey: '',
     username: '',
-    timezone: 'UTC',
-    dayEndTime: '06:00', // Default to 6:00 AM to match Beeminder's latest allowed time
-    goals: [],
+    timezone: '', // Add this if it's not already present
+    dayEndTime: '00:00', // Add this line
+    dayEndHour: 0, // Add this line
+    dayEndMinute: 0, // Add this line
+    goals: [], // Add this if it's not already present
+};
+
+const validateTime = (hours: number, minutes: number): boolean => {
+    if (hours === 6 && minutes > 0) {
+        return false;
+    }
+    return true;
+};
+
+const formatTime = (hours: number, minutes: number): string => {
+    return moment({ hours, minutes }).format('HH:mm');
+};
+
+const setDayEndTime = (hours: number, minutes: number) => {
+    if (validateTime(hours, minutes)) {
+        const time = formatTime(hours, minutes);
+        // Save the time to your settings
+        // Update your UI or perform any other necessary actions
+    } else {
+        new Notice('Invalid time. Please choose between 00:00-06:00 or 07:00-23:59.');
+    }
+};
+
+// When calculating the target date for Beeminder
+const getTargetDate = (dayEndTime: string): string => {
+    const now = moment();
+    const endTime = moment(dayEndTime, 'HH:mm');
+    
+    let targetDate = now.clone();
+    if (now.hour() < endTime.hour() || (now.hour() === endTime.hour() && now.minute() < endTime.minute())) {
+        targetDate.subtract(1, 'day');
+    }
+
+    return targetDate.format('YYYY-MM-DD');
 };
 
 export default class ExamplePlugin extends Plugin {
@@ -148,17 +186,18 @@ export default class ExamplePlugin extends Plugin {
 
     private async pushBeeminderDataPoint(value: number, goalSlug: string) {
         const now = moment.tz(this.settings.timezone);
-        const dayEndTime = moment(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
+        const todayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
         
-        // Adjust the date based on the day end time
         let targetDate = now.clone();
-        if (now.hour() < dayEndTime.hour() || (now.hour() === dayEndTime.hour() && now.minute() < dayEndTime.minute())) {
+
+        // Night Owl Zone
+        if (todayEndTime.hour() >= 0 && todayEndTime.hour() <= 6 && now.isBefore(todayEndTime)) {
             targetDate.subtract(1, 'day');
         }
 
         const formattedDate = targetDate.format('YYYY-MM-DD');
 
-        console.log(`Pushing datapoint for date: ${formattedDate}, current time: ${now.format()}, day end time: ${dayEndTime.format()}`);
+        console.log(`Pushing datapoint for date: ${formattedDate}, current time: ${now.format()}, day end time: ${todayEndTime.format()}`);
 
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}`, {
             method: 'POST',
@@ -187,6 +226,7 @@ export default class ExamplePlugin extends Plugin {
 
 class BeeminderSettingTab extends PluginSettingTab {
     plugin: ExamplePlugin;
+    currentTimeDisplay: HTMLElement;
 
     constructor(app: App, plugin: ExamplePlugin) {
         super(app, plugin);
@@ -235,26 +275,55 @@ class BeeminderSettingTab extends PluginSettingTab {
                     });
             });
 
+        let hourValue = this.plugin.settings.dayEndHour ?? 0;
+        let minuteValue = this.plugin.settings.dayEndMinute ?? 0;
+
+        // Create sliders for hour and minute
         new Setting(containerEl)
             .setName('Day End Time')
-            .setDesc('Set the time when you consider the day to be over (24-hour format, allowed range 07:00 - 06:00)')
-            .addText(text => text
-                .setPlaceholder('HH:MM')
-                .setValue(this.plugin.settings.dayEndTime)
+            .setDesc('Set the end time for your Beeminder day (7:00 AM to 6:00 AM)')
+            .addSlider(slider => slider
+                .setLimits(0, 23, 1)
+                .setValue(hourValue)
+                .setDynamicTooltip()
                 .onChange(async (value) => {
-                    const timeValue = moment(value, 'HH:mm');
-                    const minTime = moment('00:00', 'HH:mm');
-                    const maxTime = moment('06:00', 'HH:mm');
-
-                    if (timeValue.isSameOrAfter(minTime) && timeValue.isSameOrBefore(maxTime)) {
-                        this.plugin.settings.dayEndTime = value;
+                    hourValue = value;
+                    if (validateTime(hourValue, minuteValue)) {
+                        this.plugin.settings.dayEndHour = value;
+                        this.plugin.settings.dayEndTime = formatTime(hourValue, minuteValue);
                         await this.plugin.saveSettings();
+                        this.updateCurrentTimeDisplay(hourValue, minuteValue);
                     } else {
-                        new Notice('Invalid time. Please choose between 07:00 and 06:00 (inclusive).');
+                        new Notice('Invalid time. Please choose between 00:00-06:00 or 07:00-23:59.');
+                    }
+                }))
+            .addSlider(slider => slider
+                .setLimits(0, 59, 1)
+                .setValue(minuteValue)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    minuteValue = value;
+                    if (validateTime(hourValue, minuteValue)) {
+                        this.plugin.settings.dayEndMinute = value;
+                        this.plugin.settings.dayEndTime = formatTime(hourValue, minuteValue);
+                        await this.plugin.saveSettings();
+                        this.updateCurrentTimeDisplay(hourValue, minuteValue);
+                    } else {
+                        new Notice('Invalid time. Please choose between 00:00-06:00 or 07:00-23:59.');
                     }
                 }));
 
-        containerEl.createEl('p', {text: 'Note: Deadlines from 07:00 to 23:59 are considered "Early Bird" deadlines for the current day. Deadlines from 00:00 to 06:00 are "Night Owl" deadlines, technically for the next day.'});
+        // Create a new setting for the current time display
+        new Setting(containerEl)
+            .setName('Current Day End Time')
+            .setDesc('The currently set day end time is:')
+            .addText(text => {
+                this.currentTimeDisplay = text.inputEl;
+                text.setDisabled(true);
+                this.updateCurrentTimeDisplay(hourValue, minuteValue);
+            });
+
+        containerEl.createEl('p', {text: 'Note: Deadlines from 07:00 to 23:59 are considered "Early Bird" deadlines for the current day. Deadlines from 00:00 to 06:00 are "Night Owl" deadlines, technically for the next day. The time range 06:01-06:59 is not allowed.'});
 
         containerEl.createEl('h3', {text: 'Goals and File Paths'});
 
@@ -332,6 +401,12 @@ class BeeminderSettingTab extends PluginSettingTab {
                 }));
 
         this.addHotkeySection(containerEl);
+    }
+
+    updateCurrentTimeDisplay(hours: number, minutes: number) {
+        if (this.currentTimeDisplay) {
+            (this.currentTimeDisplay as HTMLInputElement).value = formatTime(hours, minutes);
+        }
     }
 
     addHotkeySection(containerEl: HTMLElement) {
