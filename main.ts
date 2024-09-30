@@ -148,29 +148,17 @@ export default class ExamplePlugin extends Plugin {
 
     private async pushBeeminderDataPoint(value: number, goalSlug: string) {
         const now = moment.tz(this.settings.timezone);
-        const dayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
+        const dayEndTime = moment(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
         
-        let dateString: string;
-
-        if (dayEndTime.hour() >= 0 && dayEndTime.hour() < 6) {
-            // Night Owl deadline (00:00 to 06:00)
-            if (now.hour() >= 0 && now.isBefore(dayEndTime)) {
-                // It's after midnight but before the deadline, use yesterday's date
-                dateString = now.subtract(1, 'day').format('YYYY-MM-DD');
-            } else {
-                dateString = now.format('YYYY-MM-DD');
-            }
-        } else {
-            // Early Bird deadline (07:00 to 23:59)
-            if (now.isAfter(dayEndTime)) {
-                // It's past the deadline, use tomorrow's date
-                dateString = now.add(1, 'day').format('YYYY-MM-DD');
-            } else {
-                dateString = now.format('YYYY-MM-DD');
-            }
+        // Adjust the date based on the day end time
+        let targetDate = now.clone();
+        if (now.hour() < dayEndTime.hour() || (now.hour() === dayEndTime.hour() && now.minute() < dayEndTime.minute())) {
+            targetDate.subtract(1, 'day');
         }
 
-        console.log(`Pushing datapoint for date: ${dateString}, current time: ${now.format()}, day end time: ${dayEndTime.format()}`);
+        const formattedDate = targetDate.format('YYYY-MM-DD');
+
+        console.log(`Pushing datapoint for date: ${formattedDate}, current time: ${now.format()}, day end time: ${dayEndTime.format()}`);
 
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}`, {
             method: 'POST',
@@ -180,7 +168,7 @@ export default class ExamplePlugin extends Plugin {
             body: JSON.stringify({
                 value: value,
                 comment: "Updated from Obsidian Plugin",
-                daystamp: dateString
+                daystamp: formattedDate
             })
         });
         const data = await response.json();
@@ -254,14 +242,15 @@ class BeeminderSettingTab extends PluginSettingTab {
                 .setPlaceholder('HH:MM')
                 .setValue(this.plugin.settings.dayEndTime)
                 .onChange(async (value) => {
-                    if (/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) {
-                        const hour = parseInt(value.split(':')[0]);
-                        if (hour >= 7 || hour < 6) {
-                            this.plugin.settings.dayEndTime = value;
-                            await this.plugin.saveSettings();
-                        } else {
-                            new Notice('Invalid time. Please choose between 07:00 and 06:00.');
-                        }
+                    const timeValue = moment(value, 'HH:mm');
+                    const minTime = moment('00:00', 'HH:mm');
+                    const maxTime = moment('06:00', 'HH:mm');
+
+                    if (timeValue.isSameOrAfter(minTime) && timeValue.isSameOrBefore(maxTime)) {
+                        this.plugin.settings.dayEndTime = value;
+                        await this.plugin.saveSettings();
+                    } else {
+                        new Notice('Invalid time. Please choose between 07:00 and 06:00 (inclusive).');
                     }
                 }));
 
