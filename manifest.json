@@ -1,11 +1,11 @@
 {
 	"id": "obsidian-beeminder-plugin",
 	"name": "Beeminder",
-	"version": "1.0.0",
+	"version": "1.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "Automatically sync various Obsidian data to Beeminder Goal Datapoints.",
 	"author": "Back of the Napkin Labs",
-	"authorUrl": "https://backofthenapkinlabs.com",
-	"fundingUrl": "https://backofthenapkinlabs.com",
+	"authorUrl": "https://www.backofthenapkinlabs.com",
+	"fundingUrl": "https://www.backofthenapkinlabs.com",
 	"isDesktopOnly": false
 }

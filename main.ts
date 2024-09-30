@@ -1,4 +1,9 @@
-import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce } from "obsidian";
+
+// Add this utility function at the top of your file
+function delay(ms: number) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 // 1. Extend the Settings Interface
 interface BeeminderSettings {
@@ -36,24 +41,6 @@ export default class ExamplePlugin extends Plugin {
         // Add settings tab
         this.addSettingTab(new BeeminderSettingTab(this.app, this));
 
-        // Event listeners
-        this.app.workspace.on('active-leaf-change', async () => {
-            const file = this.app.workspace.getActiveFile();
-            if (file && this.settings.goals.some(goal => goal.filePath === file.path)) {
-                const content = await this.app.vault.read(file);
-                console.log(content);
-                await this.checkAndUpdateBeeminder(content, file.path);
-            }
-        });
-
-        this.app.workspace.on('editor-change', async editor => {
-            const file = this.app.workspace.getActiveFile();
-            if (file && this.settings.goals.some(goal => goal.filePath === file.path)) {
-                const content = editor.getDoc().getValue();
-                await this.checkAndUpdateBeeminder(content, file.path);
-            }
-        });
-
         // Add hotkeys for up to 10 goals
         for (let i = 1; i <= 10; i++) {
             this.addCommand({
@@ -75,15 +62,13 @@ export default class ExamplePlugin extends Plugin {
     }
 
     private async manualSubmitDatapoint(goalIndex?: number) {
-        const file = this.app.workspace.getActiveFile();
-        if (file) {
-            const content = await this.app.vault.read(file);
-            if (goalIndex !== undefined && goalIndex < this.settings.goals.length) {
-                const goal = this.settings.goals[goalIndex];
-                await this.checkAndUpdateBeeminder(content, goal.filePath);
-            } else {
-                // If no specific goal is specified, check all goals
-                await this.checkAndUpdateBeeminder(content, file.path);
+        if (goalIndex !== undefined && goalIndex < this.settings.goals.length) {
+            const goal = this.settings.goals[goalIndex];
+            await this.checkAndUpdateBeeminder(goal.filePath);
+        } else {
+            // If no specific goal is specified, update all goals
+            for (const goal of this.settings.goals) {
+                await this.checkAndUpdateBeeminder(goal.filePath);
             }
         }
     }
@@ -112,39 +97,46 @@ export default class ExamplePlugin extends Plugin {
 
     private async autoSubmitDatapoint(goalIndex: number) {
         const goal = this.settings.goals[goalIndex];
-        const file = this.app.vault.getAbstractFileByPath(goal.filePath);
-        if (file instanceof TFile) {
-            const content = await this.app.vault.read(file);
-            await this.checkAndUpdateBeeminder(content, goal.filePath);
-        }
+        await this.checkAndUpdateBeeminder(goal.filePath);
     }
 
-    private async checkAndUpdateBeeminder(fileContent: string, filePath: string) {
+    // Modify the checkAndUpdateBeeminder method
+    private checkAndUpdateBeeminder = debounce(async (filePath: string) => {
         const goal = this.settings.goals.find(g => g.filePath === filePath);
         if (goal) {
-            let value: number;
-            switch (goal.metricType) {
-                case 'wordCount':
-                    value = fileContent.split(/\s+/).length;
-                    break;
-                case 'completedTasks':
-                    value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [x]")).length;
-                    break;
-                case 'uncompletedTasks':
-                    value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [ ]")).length;
-                    break;
-                default:
-                    console.error(`Unknown metric type: ${goal.metricType}`);
-                    return;
-            }
+            const file = this.app.vault.getAbstractFileByPath(filePath);
+            if (file instanceof TFile) {
+                // Wait for 3 seconds before reading the file
+                await delay(3000);
+                
+                const fileContent = await this.app.vault.read(file);
+                let value: number;
+                switch (goal.metricType) {
+                    case 'wordCount':
+                        value = fileContent.split(/\s+/).length;
+                        break;
+                    case 'completedTasks':
+                        value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [x]")).length;
+                        break;
+                    case 'uncompletedTasks':
+                        value = fileContent.split(/\r?\n/).filter(line => line.trim().startsWith("- [ ]")).length;
+                        break;
+                    default:
+                        console.error(`Unknown metric type: ${goal.metricType}`);
+                        return;
+                }
 
-            const currentBeeminderValue = await this.getBeeminderCurrentValue(goal.slug);
-            if (value !== currentBeeminderValue) {
-                await this.pushBeeminderDataPoint(value, goal.slug);
+                const currentBeeminderValue = await this.getBeeminderCurrentValue(goal.slug);
+                if (value !== currentBeeminderValue) {
+                    await this.pushBeeminderDataPoint(value, goal.slug);
+                } else {
+                    console.log(`No update needed for ${goal.slug}. Current value: ${value}`);
+                }
             }
         }
-    }
+    }, 500, true);
 
+    // Add this new method to fetch the current Beeminder value
     private async getBeeminderCurrentValue(goalSlug: string): Promise<number> {
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}.json?auth_token=${this.settings.apiKey}`);
         const data = await response.json();
