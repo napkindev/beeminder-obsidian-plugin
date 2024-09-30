@@ -1,4 +1,5 @@
-import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce, Notice } from "obsidian";
+import moment from 'moment-timezone';
 
 // Add this utility function at the top of your file
 function delay(ms: number) {
@@ -9,6 +10,8 @@ function delay(ms: number) {
 interface BeeminderSettings {
     apiKey: string;
     username: string;
+    timezone: string;
+    dayEndTime: string; // in 24-hour format, e.g., "06:00"
     goals: Array<{
         slug: string;
         filePath: string;
@@ -25,12 +28,14 @@ interface BeeminderSettings {
 const DEFAULT_SETTINGS: BeeminderSettings = {
     apiKey: '',
     username: '',
+    timezone: 'UTC',
+    dayEndTime: '06:00', // Default to 6:00 AM to match Beeminder's latest allowed time
     goals: [],
 };
 
 export default class ExamplePlugin extends Plugin {
     settings: BeeminderSettings;
-    private intervalId: number | null = null;
+    private intervalIds: { [key: string]: number } = {};
 
     async onload() {
         console.log("Hello world");
@@ -55,10 +60,9 @@ export default class ExamplePlugin extends Plugin {
     }
 
     onunload() {
+        // Clear all intervals when the plugin is disabled
+        Object.values(this.intervalIds).forEach(clearInterval);
         console.log("Goodbye world");
-        if (this.intervalId) {
-            window.clearInterval(this.intervalId);
-        }
     }
 
     private async manualSubmitDatapoint(goalIndex?: number) {
@@ -73,12 +77,10 @@ export default class ExamplePlugin extends Plugin {
         }
     }
 
-    public setupAutoSubmit() {
+    private setupAutoSubmit() {
         // Clear all existing intervals
-        if (this.intervalId) {
-            window.clearInterval(this.intervalId);
-            this.intervalId = null;
-        }
+        Object.values(this.intervalIds).forEach(clearInterval);
+        this.intervalIds = {};
 
         // Set up new intervals for each auto-submit goal
         this.settings.goals.forEach((goal, index) => {
@@ -88,7 +90,7 @@ export default class ExamplePlugin extends Plugin {
                      goal.pollingFrequency.minutes * 60 +
                      goal.pollingFrequency.seconds) * 1000;
                 
-                window.setInterval(() => {
+                this.intervalIds[goal.slug] = window.setInterval(() => {
                     this.autoSubmitDatapoint(index);
                 }, totalMilliseconds);
             }
@@ -97,6 +99,7 @@ export default class ExamplePlugin extends Plugin {
 
     private async autoSubmitDatapoint(goalIndex: number) {
         const goal = this.settings.goals[goalIndex];
+        console.log(`Auto-submitting datapoint for goal: ${goal.slug}`);
         await this.checkAndUpdateBeeminder(goal.filePath);
     }
 
@@ -144,6 +147,31 @@ export default class ExamplePlugin extends Plugin {
     }
 
     private async pushBeeminderDataPoint(value: number, goalSlug: string) {
+        const now = moment.tz(this.settings.timezone);
+        const dayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
+        
+        let dateString: string;
+
+        if (dayEndTime.hour() >= 0 && dayEndTime.hour() < 6) {
+            // Night Owl deadline (00:00 to 06:00)
+            if (now.hour() >= 0 && now.isBefore(dayEndTime)) {
+                // It's after midnight but before the deadline, use yesterday's date
+                dateString = now.subtract(1, 'day').format('YYYY-MM-DD');
+            } else {
+                dateString = now.format('YYYY-MM-DD');
+            }
+        } else {
+            // Early Bird deadline (07:00 to 23:59)
+            if (now.isAfter(dayEndTime)) {
+                // It's past the deadline, use tomorrow's date
+                dateString = now.add(1, 'day').format('YYYY-MM-DD');
+            } else {
+                dateString = now.format('YYYY-MM-DD');
+            }
+        }
+
+        console.log(`Pushing datapoint for date: ${dateString}, current time: ${now.format()}, day end time: ${dayEndTime.format()}`);
+
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}`, {
             method: 'POST',
             headers: {
@@ -151,7 +179,8 @@ export default class ExamplePlugin extends Plugin {
             },
             body: JSON.stringify({
                 value: value,
-                comment: "Updated from Obsidian Plugin"
+                comment: "Updated from Obsidian Plugin",
+                daystamp: dateString
             })
         });
         const data = await response.json();
@@ -202,6 +231,41 @@ class BeeminderSettingTab extends PluginSettingTab {
                     this.plugin.settings.username = value;
                     await this.plugin.saveSettings();
                 }));
+
+        new Setting(containerEl)
+            .setName('Timezone')
+            .setDesc('Select your timezone')
+            .addDropdown(dropdown => {
+                // Populate dropdown with timezones
+                moment.tz.names().forEach(tz => {
+                    dropdown.addOption(tz, tz);
+                });
+                dropdown.setValue(this.plugin.settings.timezone)
+                    .onChange(async (value) => {
+                        this.plugin.settings.timezone = value;
+                        await this.plugin.saveSettings();
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName('Day End Time')
+            .setDesc('Set the time when you consider the day to be over (24-hour format, allowed range 07:00 - 06:00)')
+            .addText(text => text
+                .setPlaceholder('HH:MM')
+                .setValue(this.plugin.settings.dayEndTime)
+                .onChange(async (value) => {
+                    if (/^([01]\d|2[0-3]):([0-5]\d)$/.test(value)) {
+                        const hour = parseInt(value.split(':')[0]);
+                        if (hour >= 7 || hour < 6) {
+                            this.plugin.settings.dayEndTime = value;
+                            await this.plugin.saveSettings();
+                        } else {
+                            new Notice('Invalid time. Please choose between 07:00 and 06:00.');
+                        }
+                    }
+                }));
+
+        containerEl.createEl('p', {text: 'Note: Deadlines from 07:00 to 23:59 are considered "Early Bird" deadlines for the current day. Deadlines from 00:00 to 06:00 are "Night Owl" deadlines, technically for the next day.'});
 
         containerEl.createEl('h3', {text: 'Goals and File Paths'});
 

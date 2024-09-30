@@ -7,5 +7,8 @@
 	"author": "Back of the Napkin Labs",
 	"authorUrl": "https://www.backofthenapkinlabs.com",
 	"fundingUrl": "https://www.backofthenapkinlabs.com",
-	"isDesktopOnly": false
+	"isDesktopOnly": false,
+	"dependencies": {
+		"moment-timezone": "^0.5.33"
+	}
 }
