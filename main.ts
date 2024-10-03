@@ -169,7 +169,7 @@ export default class ExamplePlugin extends Plugin {
 
                 const currentBeeminderValue = await this.getBeeminderCurrentValue(goal.slug);
                 if (value !== currentBeeminderValue) {
-                    await this.pushBeeminderDataPoint(value, goal.slug);
+                    await this.pushBeeminderDataPoint(value, goal.slug, file);
                 } else {
                     console.log(`No update needed for ${goal.slug}. Current value: ${value}`);
                 }
@@ -184,7 +184,7 @@ export default class ExamplePlugin extends Plugin {
         return data.curval;
     }
 
-    private async pushBeeminderDataPoint(value: number, goalSlug: string) {
+    private async pushBeeminderDataPoint(value: number, goalSlug: string, file: TFile) {
         const now = moment.tz(this.settings.timezone);
         const todayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
         
@@ -197,6 +197,9 @@ export default class ExamplePlugin extends Plugin {
 
         const formattedDate = targetDate.format('YYYY-MM-DD');
 
+        // Generate the comment with file path and current time in the user's timezone
+        const comment = `Updated from ${file.path} in Obsidian at ${now.format('HH:mm:ss')} ${this.settings.timezone}`;
+
         console.log(`Pushing datapoint for date: ${formattedDate}, current time: ${now.format()}, day end time: ${todayEndTime.format()}`);
 
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}`, {
@@ -206,7 +209,7 @@ export default class ExamplePlugin extends Plugin {
             },
             body: JSON.stringify({
                 value: value,
-                comment: "Updated from Obsidian Plugin",
+                comment: comment,
                 daystamp: formattedDate
             })
         });
