@@ -1,5 +1,6 @@
 import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce, Notice } from "obsidian";
 import moment from 'moment-timezone';
+import { Queue } from './queue'; // We'll create this file next
 
 // Add this utility function at the top of your file
 function delay(ms: number) {
@@ -74,6 +75,8 @@ const getTargetDate = (dayEndTime: string): string => {
 export default class ExamplePlugin extends Plugin {
     settings: BeeminderSettings;
     private intervalIds: { [key: string]: number } = {};
+    private updateQueue: Queue<string>;
+    private isProcessingQueue: boolean;
 
     async onload() {
         console.log("Hello world");
@@ -87,8 +90,12 @@ export default class ExamplePlugin extends Plugin {
         // Update commands
         this.updateCommands();
 
+        this.updateQueue = new Queue<string>();
+        this.isProcessingQueue = false;
+
         // Set up interval for automatic submissions if enabled
         this.setupAutoSubmit();
+        this.startQueueProcessor();
     }
 
     onunload() {
@@ -97,14 +104,33 @@ export default class ExamplePlugin extends Plugin {
         console.log("Goodbye world");
     }
 
+    private startQueueProcessor() {
+        setInterval(() => {
+            this.processQueue();
+        }, 10000); // Check queue every 5 seconds
+    }
+
+    private async processQueue() {
+        if (this.isProcessingQueue || this.updateQueue.isEmpty()) {
+            return;
+        }
+
+        this.isProcessingQueue = true;
+        const filePath = this.updateQueue.dequeue();
+        if (filePath) {
+            await this.checkAndUpdateBeeminder(filePath);
+        }
+        this.isProcessingQueue = false;
+    }
+
     private async manualSubmitDatapoint(goalIndex?: number) {
         if (goalIndex !== undefined && goalIndex < this.settings.goals.length) {
             const goal = this.settings.goals[goalIndex];
-            await this.checkAndUpdateBeeminder(goal.filePath);
+            this.updateQueue.enqueue(goal.filePath);
         } else {
             // If no specific goal is specified, update all goals
             for (const goal of this.settings.goals) {
-                await this.checkAndUpdateBeeminder(goal.filePath);
+                this.updateQueue.enqueue(goal.filePath);
             }
         }
     }
@@ -132,11 +158,11 @@ export default class ExamplePlugin extends Plugin {
     private async autoSubmitDatapoint(goalIndex: number) {
         const goal = this.settings.goals[goalIndex];
         console.log(`Auto-submitting datapoint for goal: ${goal.slug}`);
-        await this.checkAndUpdateBeeminder(goal.filePath);
+        this.updateQueue.enqueue(goal.filePath);
     }
 
     // Modify the checkAndUpdateBeeminder method
-    private checkAndUpdateBeeminder = debounce(async (filePath: string) => {
+    private checkAndUpdateBeeminder = async (filePath: string) => {
         const goal = this.settings.goals.find(g => g.filePath === filePath);
         if (goal) {
             const file = this.app.vault.getAbstractFileByPath(filePath);
@@ -161,21 +187,24 @@ export default class ExamplePlugin extends Plugin {
                         return;
                 }
 
-                const currentBeeminderValue = await this.getBeeminderCurrentValue(goal.slug);
-                if (value !== currentBeeminderValue) {
+                const lastDatapoint = await this.getBeeminderLastDatapoint(goal.slug);
+                if (value !== lastDatapoint.value) {
                     await this.pushBeeminderDataPoint(value, goal.slug, file);
                 } else {
                     console.log(`No update needed for ${goal.slug}. Current value: ${value}`);
                 }
             }
         }
-    }, 500, true);
+    };
 
-    // Add this new method to fetch the current Beeminder value
-    private async getBeeminderCurrentValue(goalSlug: string): Promise<number> {
-        const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}.json?auth_token=${this.settings.apiKey}`);
+    // Replace getBeeminderCurrentValue with this new method
+    private async getBeeminderLastDatapoint(goalSlug: string): Promise<{ value: number, daystamp: string }> {
+        const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}&count=1`);
         const data = await response.json();
-        return data.curval;
+        if (data.length > 0) {
+            return { value: data[0].value, daystamp: data[0].daystamp };
+        }
+        return { value: 0, daystamp: '' }; // Default if no datapoints exist
     }
 
     private async pushBeeminderDataPoint(value: number, goalSlug: string, file: TFile) {
