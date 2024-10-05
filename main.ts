@@ -84,14 +84,8 @@ export default class ExamplePlugin extends Plugin {
         // Add settings tab
         this.addSettingTab(new BeeminderSettingTab(this.app, this));
 
-        // Add hotkeys for up to 10 goals
-        for (let i = 1; i <= 10; i++) {
-            this.addCommand({
-                id: `submit-beeminder-datapoint-goal-${i}`,
-                name: `Submit Beeminder Datapoint for Goal ${i}`,
-                callback: () => this.manualSubmitDatapoint(i - 1),
-            });
-        }
+        // Update commands
+        this.updateCommands();
 
         // Set up interval for automatic submissions if enabled
         this.setupAutoSubmit();
@@ -224,6 +218,34 @@ export default class ExamplePlugin extends Plugin {
     async saveSettings() {
         await this.saveData(this.settings);
         this.setupAutoSubmit(); // Reconfigure auto-submit when settings change
+        this.updateCommands(); // Update commands when settings change
+    }
+
+    // Add this new method
+    private updateCommands() {
+        // Remove existing commands
+        this.removeCommand(`submit-beeminder-datapoint-all`);
+        for (let i = 1; i <= 10; i++) {
+            this.removeCommand(`submit-beeminder-datapoint-goal-${i}`);
+        }
+
+        // Add command for submitting all goals
+        this.addCommand({
+            id: 'submit-beeminder-datapoint-all',
+            name: 'Submit Beeminder Datapoint for All Goals',
+            callback: () => this.manualSubmitDatapoint(),
+        });
+
+        // Add commands for individual goals
+        this.settings.goals.forEach((goal, index) => {
+            if (index < 10) {
+                this.addCommand({
+                    id: `submit-beeminder-datapoint-goal-${index + 1}`,
+                    name: `Submit Beeminder Datapoint for ${goal.slug || `Goal ${index + 1}`}`,
+                    callback: () => this.manualSubmitDatapoint(index),
+                });
+            }
+        });
     }
 }
 
