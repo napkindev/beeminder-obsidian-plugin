@@ -1,4 +1,4 @@
-import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce, Notice } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App, TFile, WorkspaceLeaf, Modal, debounce, Notice, TFolder } from "obsidian";
 import moment from 'moment-timezone';
 import { Queue } from './queue'; // We'll create this file next
 
@@ -24,8 +24,12 @@ interface BeeminderSettings {
             minutes: number;
             seconds: number;
         };
+        isDailyNote: boolean;
     }>;
     dayEndHour: number;
+    dailyNotesFolder: string;
+    dailyNoteDayEndTime: string; // New field for daily note day end time
+    beeminderDayEndTime: string; // Renamed from dayEndTime
 }
 
 const DEFAULT_SETTINGS: BeeminderSettings = {
@@ -36,6 +40,9 @@ const DEFAULT_SETTINGS: BeeminderSettings = {
     dayEndHour: 0, // Add this line
     dayEndMinute: 0, // Add this line
     goals: [], // Add this if it's not already present
+    dailyNotesFolder: 'Daily Notes',
+    dailyNoteDayEndTime: '00:00',
+    beeminderDayEndTime: '00:00',
 };
 
 const validateTime = (hours: number, minutes: number): boolean => {
@@ -158,18 +165,38 @@ export default class ExamplePlugin extends Plugin {
     private async autoSubmitDatapoint(goalIndex: number) {
         const goal = this.settings.goals[goalIndex];
         console.log(`Auto-submitting datapoint for goal: ${goal.slug}`);
-        this.updateQueue.enqueue(goal.filePath);
+        
+        let file: TFile | null = null;
+        if (goal.isDailyNote) {
+            file = this.getDailyNote();
+        } else {
+            const abstractFile = this.app.vault.getAbstractFileByPath(goal.filePath);
+            if (abstractFile instanceof TFile) {
+                file = abstractFile;
+            }
+        }
+
+        if (file) {
+            await this.checkAndUpdateBeeminder(file.path);
+        } else {
+            console.log(`No file found for goal: ${goal.slug}`);
+        }
     }
 
-    // Modify the checkAndUpdateBeeminder method
-    private checkAndUpdateBeeminder = async (filePath: string) => {
-        const goal = this.settings.goals.find(g => g.filePath === filePath);
+    private async checkAndUpdateBeeminder(filePath: string) {
+        const goal = this.settings.goals.find(g => g.filePath === filePath || g.isDailyNote);
         if (goal) {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file instanceof TFile) {
-                // Wait for 3 seconds before reading the file
-                await delay(3000);
-                
+            let file: TFile | null = null;
+            if (goal.isDailyNote) {
+                file = this.getDailyNote();
+            } else {
+                const abstractFile = this.app.vault.getAbstractFileByPath(filePath);
+                if (abstractFile instanceof TFile) {
+                    file = abstractFile;
+                }
+            }
+
+            if (file) {
                 const fileContent = await this.app.vault.read(file);
                 let value: number;
                 switch (goal.metricType) {
@@ -188,52 +215,129 @@ export default class ExamplePlugin extends Plugin {
                 }
 
                 const lastDatapoint = await this.getBeeminderLastDatapoint(goal.slug);
-                if (value !== lastDatapoint.value) {
-                    await this.pushBeeminderDataPoint(value, goal.slug, file);
+                const currentDayStamp = this.getCurrentDayStamp(false); // Use Beeminder day end time
+                
+                if (lastDatapoint.daystamp === currentDayStamp) {
+                    await this.updateBeeminderDataPoint(value, goal.slug, file, lastDatapoint.id);
                 } else {
-                    console.log(`No update needed for ${goal.slug}. Current value: ${value}`);
+                    await this.pushBeeminderDataPoint(value, goal.slug, file);
                 }
             }
         }
-    };
+    }
 
-    // Replace getBeeminderCurrentValue with this new method
-    private async getBeeminderLastDatapoint(goalSlug: string): Promise<{ value: number, daystamp: string }> {
+    private getCurrentDayStamp(isForDailyNote: boolean = false): string {
+        const now = moment.tz(this.settings.timezone);
+        const dayEndTime = moment.tz(
+            now.format('YYYY-MM-DD') + ' ' + 
+            (isForDailyNote ? this.settings.dailyNoteDayEndTime : this.settings.beeminderDayEndTime), 
+            'YYYY-MM-DD HH:mm', 
+            this.settings.timezone
+        );
+        
+        if (now.isBefore(dayEndTime)) {
+            return now.format('YYYYMMDD');
+        } else {
+            return now.add(1, 'day').format('YYYYMMDD');
+        }
+    }
+
+    private getDailyNote(): TFile | null {
+        const currentDayStamp = this.getCurrentDayStamp(true); // Use daily note day end time
+        console.log(`Searching for daily note with stamp: ${currentDayStamp}`);
+
+        // First, try to find the daily note using the Daily Notes plugin's API if available
+        // @ts-ignore
+        const dailyNotePlugin = this.app.plugins.getPlugin('daily-notes');
+        if (dailyNotePlugin && dailyNotePlugin.getDailyNote) {
+            const dailyNote = dailyNotePlugin.getDailyNote();
+            if (dailyNote) {
+                console.log(`Found daily note using Daily Notes plugin: ${dailyNote.path}`);
+                return dailyNote;
+            }
+        }
+
+        // If the Daily Notes plugin method didn't work, try to find the note manually
+        const dailyNotesFolder = this.app.vault.getAbstractFileByPath(this.settings.dailyNotesFolder || 'Daily Notes');
+        if (!(dailyNotesFolder instanceof TFolder)) {
+            console.error(`Daily notes folder not found: ${this.settings.dailyNotesFolder || 'Daily Notes'}`);
+            return null;
+        }
+
+        // Log all files in the daily notes folder for debugging
+        console.log('Files in daily notes folder:');
+        dailyNotesFolder.children.forEach(file => {
+            console.log(file.name);
+        });
+
+        // Try different date formats
+        const dateFormats = ['YYYY-MM-DD', 'YYYYMMDD', 'DD-MM-YYYY', 'MM-DD-YYYY'];
+        for (const format of dateFormats) {
+            const formattedDate = moment(currentDayStamp, 'YYYYMMDD').format(format);
+            const dailyNoteFile = dailyNotesFolder.children.find(file => file.name.startsWith(formattedDate));
+            if (dailyNoteFile instanceof TFile) {
+                console.log(`Found daily note: ${dailyNoteFile.path}`);
+                return dailyNoteFile;
+            }
+        }
+
+        console.error(`No daily note found for ${currentDayStamp}`);
+        return null;
+    }
+
+    private async getBeeminderLastDatapoint(goalSlug: string): Promise<{ id: string, value: number, daystamp: string }> {
         const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}&count=1`);
         const data = await response.json();
         if (data.length > 0) {
-            return { value: data[0].value, daystamp: data[0].daystamp };
+            return { id: data[0].id, value: data[0].value, daystamp: data[0].daystamp };
         }
-        return { value: 0, daystamp: '' }; // Default if no datapoints exist
+        return { id: '', value: 0, daystamp: '' };
+    }
+
+    private shouldUpdateDatapoint(lastDatapoint: { daystamp: string }): boolean {
+        const now = moment.tz(this.settings.timezone);
+        const dayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
+        
+        if (dayEndTime.isBefore(now)) {
+            dayEndTime.add(1, 'day');
+        }
+
+        return lastDatapoint.daystamp === now.format('YYYYMMDD') && now.isBefore(dayEndTime);
+    }
+
+    private async updateBeeminderDataPoint(value: number, goalSlug: string, file: TFile, datapointId: string) {
+        const now = moment.tz(this.settings.timezone);
+        const comment = `Updated from ${file.path} in Obsidian at ${now.format('HH:mm:ss')} ${this.settings.timezone}`;
+
+        const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints/${datapointId}.json`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                auth_token: this.settings.apiKey,
+                value: value,
+                comment: comment
+            })
+        });
+        const data = await response.json();
+        console.log("Data updated on Beeminder:", data);
     }
 
     private async pushBeeminderDataPoint(value: number, goalSlug: string, file: TFile) {
         const now = moment.tz(this.settings.timezone);
-        const todayEndTime = moment.tz(now.format('YYYY-MM-DD') + ' ' + this.settings.dayEndTime, 'YYYY-MM-DD HH:mm', this.settings.timezone);
-        
-        let targetDate = now.clone();
-
-        // Night Owl Zone
-        if (todayEndTime.hour() >= 0 && todayEndTime.hour() <= 6 && now.isBefore(todayEndTime)) {
-            targetDate.subtract(1, 'day');
-        }
-
-        const formattedDate = targetDate.format('YYYY-MM-DD');
-
-        // Generate the comment with file path and current time in the user's timezone
         const comment = `Updated from ${file.path} in Obsidian at ${now.format('HH:mm:ss')} ${this.settings.timezone}`;
 
-        console.log(`Pushing datapoint for date: ${formattedDate}, current time: ${now.format()}, day end time: ${todayEndTime.format()}`);
-
-        const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json?auth_token=${this.settings.apiKey}`, {
+        const response = await fetch(`https://www.beeminder.com/api/v1/users/${this.settings.username}/goals/${goalSlug}/datapoints.json`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
+                auth_token: this.settings.apiKey,
                 value: value,
                 comment: comment,
-                daystamp: formattedDate
+                timestamp: now.unix()
             })
         });
         const data = await response.json();
@@ -280,7 +384,7 @@ export default class ExamplePlugin extends Plugin {
 
 class BeeminderSettingTab extends PluginSettingTab {
     plugin: ExamplePlugin;
-    currentTimeDisplay: HTMLElement;
+    private currentTimeDisplay: HTMLInputElement;
 
     constructor(app: App, plugin: ExamplePlugin) {
         super(app, plugin);
@@ -293,10 +397,10 @@ class BeeminderSettingTab extends PluginSettingTab {
         containerEl.empty();
 
         new Setting(containerEl)
-            .setName('Beeminder API Key')
-            .setDesc('Enter your Beeminder API key.')
+            .setName('API Key')
+            .setDesc('Your Beeminder API key')
             .addText(text => text
-                .setPlaceholder('api-key')
+                .setPlaceholder('Enter your API key')
                 .setValue(this.plugin.settings.apiKey)
                 .onChange(async (value) => {
                     this.plugin.settings.apiKey = value;
@@ -304,10 +408,10 @@ class BeeminderSettingTab extends PluginSettingTab {
                 }));
 
         new Setting(containerEl)
-            .setName('Beeminder Username')
-            .setDesc('Enter your Beeminder username.')
+            .setName('Username')
+            .setDesc('Your Beeminder username')
             .addText(text => text
-                .setPlaceholder('username')
+                .setPlaceholder('Enter your username')
                 .setValue(this.plugin.settings.username)
                 .onChange(async (value) => {
                     this.plugin.settings.username = value;
@@ -316,150 +420,196 @@ class BeeminderSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('Timezone')
-            .setDesc('Select your timezone')
-            .addDropdown(dropdown => {
-                // Populate dropdown with timezones
-                moment.tz.names().forEach(tz => {
-                    dropdown.addOption(tz, tz);
-                });
-                dropdown.setValue(this.plugin.settings.timezone)
-                    .onChange(async (value) => {
-                        this.plugin.settings.timezone = value;
-                        await this.plugin.saveSettings();
-                    });
-            });
-
-        let hourValue = this.plugin.settings.dayEndHour ?? 0;
-        let minuteValue = this.plugin.settings.dayEndMinute ?? 0;
-
-        // Create sliders for hour and minute
-        new Setting(containerEl)
-            .setName('Day End Time')
-            .setDesc('Set the end time for your Beeminder day (7:00 AM to 6:00 AM)')
-            .addSlider(slider => slider
-                .setLimits(0, 23, 1)
-                .setValue(hourValue)
-                .setDynamicTooltip()
+            .setDesc('Your timezone')
+            .addText(text => text
+                .setPlaceholder('e.g. America/New_York')
+                .setValue(this.plugin.settings.timezone)
                 .onChange(async (value) => {
-                    hourValue = value;
-                    if (validateTime(hourValue, minuteValue)) {
-                        this.plugin.settings.dayEndHour = value;
-                        this.plugin.settings.dayEndTime = formatTime(hourValue, minuteValue);
-                        await this.plugin.saveSettings();
-                        this.updateCurrentTimeDisplay(hourValue, minuteValue);
-                    } else {
-                        new Notice('Invalid time. Please choose between 00:00-06:00 or 07:00-23:59.');
-                    }
-                }))
-            .addSlider(slider => slider
-                .setLimits(0, 59, 1)
-                .setValue(minuteValue)
-                .setDynamicTooltip()
-                .onChange(async (value) => {
-                    minuteValue = value;
-                    if (validateTime(hourValue, minuteValue)) {
-                        this.plugin.settings.dayEndMinute = value;
-                        this.plugin.settings.dayEndTime = formatTime(hourValue, minuteValue);
-                        await this.plugin.saveSettings();
-                        this.updateCurrentTimeDisplay(hourValue, minuteValue);
-                    } else {
-                        new Notice('Invalid time. Please choose between 00:00-06:00 or 07:00-23:59.');
-                    }
+                    this.plugin.settings.timezone = value;
+                    await this.plugin.saveSettings();
                 }));
 
-        // Create a new setting for the current time display
         new Setting(containerEl)
-            .setName('Current Day End Time')
-            .setDesc('The currently set day end time is:')
-            .addText(text => {
-                this.currentTimeDisplay = text.inputEl;
-                text.setDisabled(true);
-                this.updateCurrentTimeDisplay(hourValue, minuteValue);
-            });
-
-        containerEl.createEl('p', {text: 'Note: Deadlines from 07:00 to 23:59 are considered "Early Bird" deadlines for the current day. Deadlines from 00:00 to 06:00 are "Night Owl" deadlines, technically for the next day. The time range 06:01-06:59 is not allowed.'});
-
-        containerEl.createEl('h3', {text: 'Goals and File Paths'});
-
-        this.plugin.settings.goals.forEach((goal, index) => {
-            const goalContainer = containerEl.createDiv();
-
-            new Setting(goalContainer)
-                .setName(`Goal ${index + 1}`)
-                .addText(text => text
-                    .setPlaceholder('goal-slug')
-                    .setValue(goal.slug)
+            .setName('Day End Time')
+            .setDesc('Set the end time for your Beeminder day')
+            .addSlider(slider => {
+                const minutes = this.timeStringToMinutes(this.plugin.settings.beeminderDayEndTime);
+                slider
+                    .setLimits(0, 1439, 1)
+                    .setValue(minutes)
+                    .setDynamicTooltip()
                     .onChange(async (value) => {
-                        goal.slug = value;
+                        this.plugin.settings.beeminderDayEndTime = this.minutesToTimeString(value);
                         await this.plugin.saveSettings();
-                    }))
+                        this.display();
+                    });
+            })
+            .addExtraButton(button => button
+                .setIcon('reset')
+                .setTooltip('Reset to midnight')
+                .onClick(async () => {
+                    this.plugin.settings.beeminderDayEndTime = '00:00';
+                    await this.plugin.saveSettings();
+                    this.display();
+                }))
+            .addExtraButton(button => button
+                .setIcon('clock')
+                .setTooltip(this.plugin.settings.beeminderDayEndTime)
+            );
+
+        containerEl.createEl('h3', {text: 'Regular Note Goals'});
+        this.displayRegularGoals(containerEl);
+
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Add Regular Goal')
+                .onClick(async () => {
+                    this.addNewGoal(false);
+                }));
+
+        containerEl.createEl('h3', {text: 'Daily Note Goals'});
+        this.displayDailyNoteGoals(containerEl);
+
+        new Setting(containerEl)
+            .addButton(button => button
+                .setButtonText('Add Daily Note Goal')
+                .onClick(async () => {
+                    this.addNewGoal(true);
+                }));
+
+        this.addHotkeySection(containerEl);
+
+        new Setting(containerEl)
+            .setName('Daily Notes Folder')
+            .setDesc('Set the folder path for your daily notes')
+            .addText(text => text
+                .setPlaceholder('Daily Notes')
+                .setValue(this.plugin.settings.dailyNotesFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.dailyNotesFolder = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Daily Note Day End Time')
+            .setDesc('Set the end time for your daily notes (HH:MM)')
+            .addText(text => text
+                .setPlaceholder('00:00')
+                .setValue(this.plugin.settings.dailyNoteDayEndTime)
+                .onChange(async (value) => {
+                    this.plugin.settings.dailyNoteDayEndTime = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Beeminder Day End Time')
+            .setDesc('Set the end time for your Beeminder day (HH:MM)')
+            .addText(text => text
+                .setPlaceholder('00:00')
+                .setValue(this.plugin.settings.beeminderDayEndTime)
+                .onChange(async (value) => {
+                    this.plugin.settings.beeminderDayEndTime = value;
+                    await this.plugin.saveSettings();
+                }));
+    }
+
+    displayRegularGoals(containerEl: HTMLElement) {
+        this.plugin.settings.goals
+            .filter(goal => !goal.isDailyNote)
+            .forEach((goal, index) => {
+                this.createGoalSetting(containerEl, goal, index, false);
+            });
+    }
+
+    displayDailyNoteGoals(containerEl: HTMLElement) {
+        this.plugin.settings.goals
+            .filter(goal => goal.isDailyNote)
+            .forEach((goal, index) => {
+                this.createGoalSetting(containerEl, goal, index, true);
+            });
+    }
+
+    createGoalSetting(containerEl: HTMLElement, goal: any, index: number, isDailyNote: boolean) {
+        const goalContainer = containerEl.createDiv();
+
+        new Setting(goalContainer)
+            .setName(`${isDailyNote ? 'Daily Note' : 'Regular'} Goal ${index + 1}`)
+            .addText(text => text
+                .setPlaceholder('goal-slug')
+                .setValue(goal.slug)
+                .onChange(async (value) => {
+                    goal.slug = value;
+                    await this.plugin.saveSettings();
+                }))
+            .addDropdown(dropdown => dropdown
+                .addOption('wordCount', 'Word Count')
+                .addOption('completedTasks', 'Completed Tasks')
+                .addOption('uncompletedTasks', 'Uncompleted Tasks')
+                .setValue(goal.metricType)
+                .onChange(async (value: 'wordCount' | 'completedTasks' | 'uncompletedTasks') => {
+                    goal.metricType = value;
+                    await this.plugin.saveSettings();
+                }))
+            .addButton(button => button
+                .setButtonText('Remove')
+                .onClick(async () => {
+                    this.plugin.settings.goals = this.plugin.settings.goals.filter(g => g !== goal);
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        new Setting(goalContainer)
+            .setName('Auto Submit')
+            .addToggle(toggle => toggle
+                .setValue(goal.isAutoSubmit)
+                .onChange(async (value) => {
+                    goal.isAutoSubmit = value;
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        if (goal.isAutoSubmit) {
+            new Setting(goalContainer)
+                .setName('Polling Frequency')
+                .addText(text => text
+                    .setPlaceholder('HH:MM:SS')
+                    .setValue(`${goal.pollingFrequency.hours.toString().padStart(2, '0')}:${goal.pollingFrequency.minutes.toString().padStart(2, '0')}:${goal.pollingFrequency.seconds.toString().padStart(2, '0')}`)
+                    .onChange(async (value) => {
+                        const [hours, minutes, seconds] = value.split(':').map(Number);
+                        goal.pollingFrequency = { hours, minutes, seconds };
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        if (!isDailyNote) {
+            new Setting(goalContainer)
+                .setName('File Path')
                 .addText(text => text
                     .setPlaceholder('file/path.md')
                     .setValue(goal.filePath)
                     .onChange(async (value) => {
                         goal.filePath = value;
                         await this.plugin.saveSettings();
-                    }))
-                .addDropdown(dropdown => dropdown
-                    .addOption('wordCount', 'Word Count')
-                    .addOption('completedTasks', 'Completed Tasks')
-                    .addOption('uncompletedTasks', 'Uncompleted Tasks')
-                    .setValue(goal.metricType)
-                    .onChange(async (value: 'wordCount' | 'completedTasks' | 'uncompletedTasks') => {
-                        goal.metricType = value;
-                        await this.plugin.saveSettings();
-                    }))
-                .addToggle(toggle => toggle
-                    .setValue(goal.isAutoSubmit)
-                    .setTooltip('Toggle automatic submission')
-                    .onChange(async (value) => {
-                        goal.isAutoSubmit = value;
-                        await this.plugin.saveSettings();
-                        this.display();
-                    }))
-                .addButton(button => button
-                    .setButtonText('Remove')
-                    .onClick(async () => {
-                        this.plugin.settings.goals.splice(index, 1);
-                        await this.plugin.saveSettings();
-                        this.display();
                     }));
-
-            if (goal.isAutoSubmit) {
-                new Setting(goalContainer)
-                    .setName('Polling Frequency')
-                    .addText(text => text
-                        .setPlaceholder('HH:MM:SS')
-                        .setValue(`${goal.pollingFrequency.hours.toString().padStart(2, '0')}:${goal.pollingFrequency.minutes.toString().padStart(2, '0')}:${goal.pollingFrequency.seconds.toString().padStart(2, '0')}`)
-                        .onChange(async (value) => {
-                            const [hours, minutes, seconds] = value.split(':').map(Number);
-                            goal.pollingFrequency = { hours, minutes, seconds };
-                            await this.plugin.saveSettings();
-                        }));
-            }
-        });
-
-        new Setting(containerEl)
-            .addButton(button => button
-                .setButtonText('Add Goal')
-                .onClick(async () => {
-                    this.plugin.settings.goals.push({
-                        slug: '',
-                        filePath: '',
-                        isAutoSubmit: false,
-                        metricType: 'wordCount', // Default to word count
-                        pollingFrequency: { hours: 0, minutes: 5, seconds: 0 }
-                    });
-                    await this.plugin.saveSettings();
-                    this.display();
-                }));
-
-        this.addHotkeySection(containerEl);
+        }
     }
-
+    async addNewGoal(isDailyNote: boolean) {
+        this.plugin.settings.goals.push({
+            slug: '',
+            filePath: '',
+            isAutoSubmit: false,
+            metricType: 'wordCount',
+            pollingFrequency: { hours: 0, minutes: 5, seconds: 0 },
+            isDailyNote: isDailyNote,
+            dailyNoteSubmissionTime: '23:59', // Corrected to dailyNoteSubmissionTime
+            dailySubmitTime: '23:59' // Default to 23:59
+        });
+        await this.plugin.saveSettings();
+        this.display();
+    }
     updateCurrentTimeDisplay(hours: number, minutes: number) {
         if (this.currentTimeDisplay) {
-            (this.currentTimeDisplay as HTMLInputElement).value = formatTime(hours, minutes);
+            this.currentTimeDisplay.value = formatTime(hours, minutes);
         }
     }
 
@@ -483,5 +633,16 @@ class BeeminderSettingTab extends PluginSettingTab {
                         }, 300);
                     }));
         }
+    }
+
+    private timeStringToMinutes(timeString: string): number {
+        const [hours, minutes] = timeString.split(':').map(Number);
+        return hours * 60 + minutes;
+    }
+
+    private minutesToTimeString(minutes: number): string {
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
     }
 }
