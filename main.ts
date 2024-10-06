@@ -24,6 +24,7 @@ interface BeeminderSettings {
             minutes: number;
             seconds: number;
         };
+        goalType: 'doMore' | 'doLess' | 'odometer' | 'whittleDown';
     }>;
     dayEndHour: number;
 }
@@ -167,7 +168,6 @@ export default class ExamplePlugin extends Plugin {
         if (goal) {
             const file = this.app.vault.getAbstractFileByPath(filePath);
             if (file instanceof TFile) {
-                // Wait for 3 seconds before reading the file
                 await delay(3000);
                 
                 const fileContent = await this.app.vault.read(file);
@@ -188,8 +188,26 @@ export default class ExamplePlugin extends Plugin {
                 }
 
                 const lastDatapoint = await this.getBeeminderLastDatapoint(goal.slug);
-                if (value !== lastDatapoint.value) {
-                    await this.pushBeeminderDataPoint(value, goal.slug, file);
+                let newValue: number;
+
+                switch (goal.goalType) {
+                    case 'doMore':
+                    case 'doLess':
+                        // For Do More and Do Less, we submit the raw value
+                        newValue = value;
+                        break;
+                    case 'odometer':
+                        // For Odometer, we submit the difference from the last datapoint
+                        newValue = value - lastDatapoint.value;
+                        break;
+                    case 'whittleDown':
+                        // For Whittle Down, we submit the current value
+                        newValue = value;
+                        break;
+                }
+
+                if (newValue !== 0) {  // Only submit if there's a change
+                    await this.pushBeeminderDataPoint(newValue, goal.slug, file);
                 } else {
                     console.log(`No update needed for ${goal.slug}. Current value: ${value}`);
                 }
@@ -409,6 +427,16 @@ class BeeminderSettingTab extends PluginSettingTab {
                         goal.metricType = value;
                         await this.plugin.saveSettings();
                     }))
+                .addDropdown(dropdown => dropdown
+                    .addOption('doMore', 'Do More')
+                    .addOption('doLess', 'Do Less')
+                    .addOption('odometer', 'Odometer')
+                    .addOption('whittleDown', 'Whittle Down')
+                    .setValue(goal.goalType)
+                    .onChange(async (value: 'doMore' | 'doLess' | 'odometer' | 'whittleDown') => {
+                        goal.goalType = value;
+                        await this.plugin.saveSettings();
+                    }))
                 .addToggle(toggle => toggle
                     .setValue(goal.isAutoSubmit)
                     .setTooltip('Toggle automatic submission')
@@ -448,7 +476,8 @@ class BeeminderSettingTab extends PluginSettingTab {
                         filePath: '',
                         isAutoSubmit: false,
                         metricType: 'wordCount', // Default to word count
-                        pollingFrequency: { hours: 0, minutes: 5, seconds: 0 }
+                        pollingFrequency: { hours: 0, minutes: 5, seconds: 0 },
+                        goalType: 'doMore' // Default to Do More
                     });
                     await this.plugin.saveSettings();
                     this.display();
